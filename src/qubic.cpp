@@ -86,6 +86,8 @@
 #define system qsystem
 #endif
 
+// #define NO_QLOAN
+
 // #define INCLUDE_CONTRACT_TEST_EXAMPLES
 
 
