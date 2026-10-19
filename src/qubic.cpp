@@ -86,8 +86,6 @@
 #define system qsystem
 #endif
 
-#define NO_QLOAN
-
 // #define INCLUDE_CONTRACT_TEST_EXAMPLES
 
 
@@ -1685,9 +1683,9 @@ static void processBroadcastTick(Peer* peer, RequestResponseHeader* header)
             }
             else
             {
-                // hot fix: only accept "empty" votes for stuck tick 77259626
+                // hot fix: only accept "empty" votes for stuck tick 85371950
                 bool isOk = true;
-                if (request->tick.tick == 77259626)
+                if (request->tick.tick == 85371950)
                 {
                     // only accept zero transactionDigest
                     if (!isZero(request->tick.transactionDigest))
@@ -4221,6 +4219,12 @@ static void processTickTransaction(const Transaction* transaction, unsigned int 
         return;
     }
 
+    if (system.tick >= FREEZE_FROM_TICK
+        && isFrozenAddress(transaction->sourcePublicKey))
+    {
+        return;
+    }
+
 #ifdef TESTNET
     // Record the tx with digest
     ts.transactionsDigestAccess.acquireLock();
@@ -4715,6 +4719,47 @@ static void publishAntSolutionFor(unsigned long long processorNumber, unsigned i
     antDebugPending(L"published", entry, payload.tick);
 }
 
+// Move all qus and shares of frozen addresses to FROZEN_ESCROW. Run once, in tick FREEZE_FROM_TICK after BEGIN_TICK.
+static void transferFrozenAssetsToEscrow()
+{
+    for (unsigned long long i = 0; i < FROZEN_ADDRESSES_CAPACITY; i++)
+    {
+        const m256i frozen = gFrozenAddresses[i];
+        if (isZero(frozen))
+        {
+            continue;
+        }
+
+        const int spectrumIndex = ::spectrumIndex(frozen);
+        if (spectrumIndex >= 0)
+        {
+            const long long amount = energy(spectrumIndex);
+            if (amount > 0 && decreaseEnergy(spectrumIndex, amount))
+            {
+                increaseEnergy(frozenEscrowPublicKey, amount);
+                const QuTransfer quTransfer = { frozen, frozenEscrowPublicKey, amount };
+                logger.logQuTransfer(quTransfer);
+            }
+        }
+
+        ACQUIRE(universeLock);
+        unsigned int possessionIndex = frozen.m256i_u32[0] & (ASSETS_CAPACITY - 1);
+        while (assets[possessionIndex].varStruct.possession.type != EMPTY)
+        {
+            const auto& possession = assets[possessionIndex].varStruct.possession;
+            if (possession.type == POSSESSION && possession.publicKey == frozen && possession.numberOfShares > 0
+                && assets[possession.ownershipIndex].varStruct.ownership.publicKey == frozen)
+            {
+                int destinationOwnershipIndex, destinationPossessionIndex;
+                transferShareOwnershipAndPossession((int)possession.ownershipIndex, (int)possessionIndex, frozenEscrowPublicKey, possession.numberOfShares,
+                    &destinationOwnershipIndex, &destinationPossessionIndex, false);
+            }
+            possessionIndex = (possessionIndex + 1) & (ASSETS_CAPACITY - 1);
+        }
+        RELEASE(universeLock);
+    }
+}
+
 static void processTick(unsigned long long processorNumber)
 {
     PROFILE_SCOPE();
@@ -4833,6 +4878,11 @@ static void processTick(unsigned long long processorNumber)
     WAIT_WHILE(contractProcessorState);
     TickBench::add(TickBench::BEGIN_TICK, _btBeginTickStart, __rdtsc());
     PROFILE_SCOPE_END();
+
+    if (system.tick == FREEZE_FROM_TICK)
+    {
+        transferFrozenAssetsToEscrow();
+    }
 
     bool isThereQearnTx = false;
     unsigned int tickIndex = ts.tickToIndexCurrentEpoch(system.tick);
@@ -8203,16 +8253,16 @@ static void tickProcessor(void*, unsigned long long processorNumber)
                 tickDataSuits = true;
             }
 
-            // hot fix: force tick 77259626 to be empty
-            if (system.tick == 77259625)
+            // hot fix: force tick 85371950 to be empty
+            if (system.tick == 85371949)
             {
-                // ignore next tick (77259626)
+                // ignore next tick (85371950)
                 targetNextTickDataDigest = m256i::zero();
                 targetNextTickDataDigestIsKnown = true;
             }
 
             // should clear the stale votes in swap vm state too
-            if (system.tick == 77259626)
+            if (system.tick == 85371950)
             {
                 for (unsigned int i = 0; i < NUMBER_OF_COMPUTORS; i++)
                 {
